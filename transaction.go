@@ -45,6 +45,51 @@ func (out *TXOutput) IsLockedWithKey(pubKeyHash []byte) bool {
 	return bytes.Compare(out.PubKeyHash, pubKeyHash) == 0
 }
 
+// String returns a human-readable representation of a TXOutput
+func (output TXOutput) String() string {
+	var lines []string
+
+	lines = append(lines, fmt.Sprintf("\n--- TXOutput"))
+
+	lines = append(lines, fmt.Sprintf("       Value:  %d", output.Value))
+	lines = append(lines, fmt.Sprintf("       PubKeyHash: %x", output.PubKeyHash))
+
+	return strings.Join(lines, "\n")
+}
+
+// TXOutputs collects TXOutput
+type TXOutputs struct {
+	Outputs []TXOutput
+}
+
+// Serialize serializes TXOutputs
+func (outs TXOutputs) Serialize() []byte {
+	var buff bytes.Buffer
+
+	enc := gob.NewEncoder(&buff)
+	err := enc.Encode(outs)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	return buff.Bytes()
+}
+
+// DeserializeOutputs deserializes TXOutputs
+func DeserializeOutputs(data []byte) TXOutputs {
+	var outputs TXOutputs
+
+	dec := gob.NewDecoder(bytes.NewReader(data))
+	err := dec.Decode(&outputs)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	return outputs
+}
+
+//////////////////////////////////////下面是输入
+
 type TXInput struct {
 	Txid []byte
 	Vout int //引用了Txid这个交易的输出的索引
@@ -97,7 +142,7 @@ func (tx *Transaction) Hash() []byte {
 // 	return out.ScriptPubKey == unlockingData
 // }
 
-func NewUTXOTransaction(from, to string, amount int, bc *Blockchain) *Transaction {
+func NewUTXOTransaction(from, to string, amount int, UTXOSet *UTXOSet) *Transaction {
 	var inputs []TXInput
 	var outputs []TXOutput
 
@@ -107,7 +152,7 @@ func NewUTXOTransaction(from, to string, amount int, bc *Blockchain) *Transactio
 	}
 	wallet := wallets.GetWallet(from)
 	pubKeyHash := HashPubKey(wallet.PublicKey)
-	acc, validOutputs := bc.FindSpendableOutputs(pubKeyHash, amount)
+	acc, validOutputs := UTXOSet.FindSpendableOutputs(pubKeyHash, amount)
 	log.Printf("\nvalidOutputs:%#v\n\n", validOutputs)
 	if acc < amount {
 		log.Panic("ERROR: Not enough funds")
@@ -135,21 +180,27 @@ func NewUTXOTransaction(from, to string, amount int, bc *Blockchain) *Transactio
 
 	tx := Transaction{nil, inputs, outputs}
 	tx.ID = tx.Hash()
-	bc.SignTransaction(&tx, wallet.PrivateKey)
+	UTXOSet.Blockchain.SignTransaction(&tx, wallet.PrivateKey)
 	log.Printf("\nnewTx:%s\n\n", tx)
 	return &tx
 }
 
 func NewCoinbaseTX(to, data string) *Transaction {
 	if data == "" {
-		data = fmt.Sprintf("Reward to '%s'", to)
+		randData := make([]byte, 20)
+		_, err := rand.Read(randData)
+		if err != nil {
+			log.Panic(err)
+		}
+
+		data = fmt.Sprintf("%x", randData)
 	}
 
 	txin := TXInput{[]byte{}, -1, nil, []byte(data)}
 	txout := *NewTXOutput(subsidy, to)
 	tx := Transaction{nil, []TXInput{txin}, []TXOutput{txout}}
 	tx.ID = tx.Hash()
-
+	log.Printf("\nnewCoinbaseTx:%s\n\n", tx)
 	return &tx
 }
 
@@ -157,7 +208,7 @@ func NewCoinbaseTX(to, data string) *Transaction {
 func (tx Transaction) String() string {
 	var lines []string
 
-	lines = append(lines, fmt.Sprintf("--- Transaction %x:", tx.ID))
+	lines = append(lines, fmt.Sprintf("\n--- Transaction %x:", tx.ID))
 
 	for i, input := range tx.Vin {
 
@@ -225,6 +276,11 @@ func (tx *Transaction) TrimmedCopy() Transaction {
 
 // Verify 验证每一个tx里面的签名
 func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
+	// Coinbase 为矿工奖励, 所以不需要验证
+	if tx.IsCoinbase() {
+		return true
+	}
+
 	txCopy := tx.TrimmedCopy()
 	curve := elliptic.P256()
 

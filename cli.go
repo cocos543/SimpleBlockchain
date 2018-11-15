@@ -135,7 +135,7 @@ func (cli *CLI) showWallet() {
 
 	for address, w := range wallets.Wallets {
 		fmt.Printf("Your new address: %v \nprivate: %x\n", address, w.PrivateKey.D.Bytes())
-		fmt.Printf("public: %s\n", string(w.GetAddress()))
+		fmt.Printf("public: %s\n", hex.EncodeToString(w.PublicKey))
 		fmt.Printf("public hash: %s\n\n", hex.EncodeToString(HashPubKey(w.PublicKey)))
 		//fmt.Printf("public: %s\n\n", Base58Encode(append(append([]byte{0x00}, HashPubKey(w.PublicKey)...), []byte{0x00, 0x00, 0x00, 0x00}...)))
 		//fmt.Printf("public: %s\n\n", Base58Encode(append(append([]byte{0x00}, []byte{0x00, 0x00, 0x00, 0x00}...), HashPubKey(w.PublicKey)...)))
@@ -151,27 +151,46 @@ func (cli *CLI) getBalance(address string) {
 	defer bc.db.Close()
 
 	balance := 0
-	UTXOs := bc.FindUTXO(HashPubKeyFromAddress([]byte(address)))
+	us := UTXOSet{bc}
+	//us.Reindex()
+	UTXOs := us.FindUTXO(HashPubKeyFromAddress([]byte(address)))
 
 	for _, out := range UTXOs {
 		balance += out.Value
 	}
 
 	fmt.Printf("Balance of '%s': %d\n", address, balance)
+
 }
 
 func (cli *CLI) createBlockChain(address string) {
 	bc := CreateBlockchain(address)
 	defer bc.db.Close()
+
+	UTXOSet := UTXOSet{bc}
+	UTXOSet.Reindex()
+
 	fmt.Println("Done!")
 }
 
 func (cli *CLI) send(from, to string, amount int) {
+	if !ValidateAddress(from) {
+		log.Panic("ERROR: Sender address is not valid")
+	}
+	if !ValidateAddress(to) {
+		log.Panic("ERROR: Recipient address is not valid")
+	}
 	bc := NewBlockchain()
+	UTXOSet := UTXOSet{bc}
 	defer bc.db.Close()
 
-	tx := NewUTXOTransaction(from, to, amount, bc)
-	bc.MineBlock([]*Transaction{tx})
+	//发送交易的人顺便挖矿, 得到奖励
+	cbTx := NewCoinbaseTX(from, "")
+	//下面创建tx的时候, 不会使用到上面新出的coinbase.
+	tx := NewUTXOTransaction(from, to, amount, &UTXOSet)
+
+	newBlock := bc.MineBlock([]*Transaction{cbTx, tx})
+	UTXOSet.Update(newBlock)
 	fmt.Println("Success!")
 }
 
@@ -189,7 +208,7 @@ func (cli *CLI) printChain() {
 		pow := NewProofOfWork(block)
 		fmt.Printf("PoW: %s\n\n", strconv.FormatBool(pow.Validate()))
 		for _, tx := range block.Transactions {
-			fmt.Printf("%#v", tx)
+			fmt.Printf("%s", tx)
 		}
 		fmt.Printf("\n\n")
 
