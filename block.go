@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/gob"
 	"time"
 )
@@ -13,6 +12,9 @@ type Block struct {
 	PrevBlockHash []byte
 	Hash          []byte
 	Nonce         int
+
+	// 用于临时保存计算出的交易hash
+	txMerkleTreeRootHash []byte
 }
 
 // Serialize 序列化Block结构体
@@ -42,7 +44,7 @@ func DeserializeBlock(d []byte) *Block {
 }
 
 func NewBlock(transactions []*Transaction, prevBlockHash []byte) *Block {
-	block := &Block{time.Now().Unix(), transactions, prevBlockHash, []byte{}, 0}
+	block := &Block{time.Now().Unix(), transactions, prevBlockHash, []byte{}, 0, nil}
 	pow := NewProofOfWork(block)
 	nonce, hash := pow.Run()
 
@@ -57,13 +59,18 @@ func NewGenesisBlock(coinbase *Transaction) *Block {
 }
 
 func (b *Block) HashTransactions() []byte {
-	var txHashes [][]byte
-	var txHash [32]byte
+	// 这样可以避免挖矿过程中重复计算出同一个MerkleTree rootHash
+	if b.txMerkleTreeRootHash != nil {
+		return b.txMerkleTreeRootHash
+	}
+	var transactions [][]byte
 
 	for _, tx := range b.Transactions {
-		txHashes = append(txHashes, tx.ID)
+		transactions = append(transactions, tx.Serialize())
 	}
-	txHash = sha256.Sum256(bytes.Join(txHashes, []byte{}))
 
-	return txHash[:]
+	mTree := NewMerkleTree(transactions)
+	b.txMerkleTreeRootHash = mTree.RootNode.Data
+
+	return mTree.RootNode.Data
 }
