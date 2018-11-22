@@ -12,11 +12,11 @@ import (
 	"github.com/boltdb/bolt"
 )
 
-const dbFile = "db/blockchain.db"
+const dbFile = "db/blockchain_%s.db"
 const blocksBucket = "blocksBucket"
 const genesisCoinbaseData = "The Times 03/Jan/2009 Chancellor on brink of second bailout for banks"
 
-func dbExists() bool {
+func dbExists(dbFile string) bool {
 	if _, err := os.Stat(dbFile); os.IsNotExist(err) {
 		return false
 	}
@@ -29,8 +29,9 @@ type Blockchain struct {
 }
 
 // CreateBlockchain creates a new blockchain DB
-func CreateBlockchain(address string) *Blockchain {
-	if dbExists() {
+func CreateBlockchain(address string, nodeID string) *Blockchain {
+	dbFile := fmt.Sprintf(dbFile, nodeID)
+	if dbExists(dbFile) {
 		fmt.Println("Blockchain already exists.")
 		os.Exit(1)
 	}
@@ -73,8 +74,9 @@ func CreateBlockchain(address string) *Blockchain {
 	return &bc
 }
 
-func NewBlockchain() *Blockchain {
-	if dbExists() == false {
+func NewBlockchain(nodeID string) *Blockchain {
+	dbFile := fmt.Sprintf(dbFile, nodeID)
+	if dbExists(dbFile) == false {
 		fmt.Println("No existing blockchain found. Create one first.")
 		os.Exit(1)
 	}
@@ -105,9 +107,71 @@ func (bc *Blockchain) GetDB() *bolt.DB {
 	return bc.db
 }
 
+// GetBestHeight returns the height of the latest block
+func (bc *Blockchain) GetBestHeight() int {
+	var lastBlock Block
+
+	err := bc.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(blocksBucket))
+		lastHash := b.Get([]byte("l"))
+		blockData := b.Get(lastHash)
+		lastBlock = *DeserializeBlock(blockData)
+
+		return nil
+	})
+	if err != nil {
+		log.Panic(err)
+	}
+
+	return lastBlock.Height
+}
+
+// GetBlock finds a block by its hash and returns it
+func (bc *Blockchain) GetBlock(blockHash []byte) (Block, error) {
+	var block Block
+
+	err := bc.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(blocksBucket))
+
+		blockData := b.Get(blockHash)
+
+		if blockData == nil {
+			return errors.New("Block is not found.")
+		}
+
+		block = *DeserializeBlock(blockData)
+
+		return nil
+	})
+	if err != nil {
+		return block, err
+	}
+
+	return block, nil
+}
+
+// GetBlockHashes returns a list of hashes of all the blocks in the chain
+func (bc *Blockchain) GetBlockHashes() [][]byte {
+	var blocks [][]byte
+	bci := bc.Iterator()
+
+	for {
+		block := bci.Next()
+
+		blocks = append(blocks, block.Hash)
+
+		if len(block.PrevBlockHash) == 0 {
+			break
+		}
+	}
+
+	return blocks
+}
+
 // MineBlock mines a new block with the provided transactions
 func (bc *Blockchain) MineBlock(transactions []*Transaction) *Block {
 	var lastHash []byte
+	var lastHeight int
 
 	for _, tx := range transactions {
 		if bc.VerifyTransaction(tx) != true {
@@ -119,6 +183,11 @@ func (bc *Blockchain) MineBlock(transactions []*Transaction) *Block {
 		b := tx.Bucket([]byte(blocksBucket))
 		lastHash = b.Get([]byte("l"))
 
+		blockData := b.Get(lastHash)
+		block := DeserializeBlock(blockData)
+
+		lastHeight = block.Height
+
 		return nil
 	})
 
@@ -126,7 +195,7 @@ func (bc *Blockchain) MineBlock(transactions []*Transaction) *Block {
 		log.Panic(err)
 	}
 
-	newBlock := NewBlock(transactions, lastHash)
+	newBlock := NewBlock(transactions, lastHash, lastHeight+1)
 
 	err = bc.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(blocksBucket))
@@ -145,6 +214,46 @@ func (bc *Blockchain) MineBlock(transactions []*Transaction) *Block {
 		return nil
 	})
 	return newBlock
+}
+
+// AddBlock saves the block into the blockchain
+// 这里加入一个块缺少了验证是否合法的代码.
+func (bc *Blockchain) AddBlock(block *Block) {
+	err := bc.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(blocksBucket))
+		blockInDb := b.Get(block.Hash)
+
+		if blockInDb != nil {
+			log.Printf("Block 0x%x exist!", block.Hash)
+			return nil
+		}
+
+		blockData := block.Serialize()
+		err := b.Put(block.Hash, blockData)
+		if err != nil {
+			log.Panic(err)
+		}
+
+		lastHash := b.Get([]byte("l"))
+		lastBlockData := b.Get(lastHash)
+		lastBlock := DeserializeBlock(lastBlockData)
+		//log.Printf("Get l:0x%x", lastHash)
+
+		// 这里确保了记录到的l始终是区块高度最高的那个区块的Hash, 也就是最后一块, 符合逻辑要求.
+		if block.Height > lastBlock.Height {
+			//log.Printf("Put l:0x%x", block.Hash)
+			err = b.Put([]byte("l"), block.Hash)
+			if err != nil {
+				log.Panic(err)
+			}
+			bc.tip = block.Hash
+		}
+
+		return nil
+	})
+	if err != nil {
+		log.Panic(err)
+	}
 }
 
 // BlockchainIterator 区块迭代器
@@ -248,6 +357,7 @@ func (bc *Blockchain) FindTransaction(ID []byte) (Transaction, error) {
 
 // SignTransaction 对交易进行签名
 func (bc *Blockchain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateKey) {
+	log.Printf("SignTransaction:%s\n", tx)
 	prevTXs := make(map[string]Transaction)
 
 	for _, vin := range tx.Vin {
@@ -262,8 +372,9 @@ func (bc *Blockchain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateKey)
 }
 
 func (bc *Blockchain) VerifyTransaction(tx *Transaction) bool {
-	// Coinbase是奖励交易, 没有输入, 所以不需要验证
+	log.Printf("VerifyTransaction:%s\n", tx)
 	if tx.IsCoinbase() {
+		// Coinbase是奖励交易, 没有输入, 所以不需要验证
 		return true
 	}
 

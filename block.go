@@ -12,6 +12,7 @@ type Block struct {
 	PrevBlockHash []byte
 	Hash          []byte
 	Nonce         int
+	Height        int
 
 	// 用于临时保存计算出的交易hash
 	txMerkleTreeRootHash []byte
@@ -43,8 +44,8 @@ func DeserializeBlock(d []byte) *Block {
 	return &block
 }
 
-func NewBlock(transactions []*Transaction, prevBlockHash []byte) *Block {
-	block := &Block{time.Now().Unix(), transactions, prevBlockHash, []byte{}, 0, nil}
+func NewBlock(transactions []*Transaction, prevBlockHash []byte, height int) *Block {
+	block := &Block{time.Now().Unix(), transactions, prevBlockHash, []byte{}, 0, height, nil}
 	pow := NewProofOfWork(block)
 	nonce, hash := pow.Run()
 
@@ -55,7 +56,8 @@ func NewBlock(transactions []*Transaction, prevBlockHash []byte) *Block {
 }
 
 func NewGenesisBlock(coinbase *Transaction) *Block {
-	return NewBlock([]*Transaction{coinbase}, []byte{})
+	// 第一个块的高度是0
+	return NewBlock([]*Transaction{coinbase}, []byte{}, 0)
 }
 
 func (b *Block) HashTransactions() []byte {

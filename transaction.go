@@ -92,10 +92,12 @@ func DeserializeOutputs(data []byte) TXOutputs {
 
 type TXInput struct {
 	Txid []byte
-	Vout int //引用了Txid这个交易的输出的索引
+	//引用了Txid这个交易的输出的索引
+	Vout int
 	//ScriptSig string
 	Signature []byte
-	PubKey    []byte
+	// input保存的公钥, 这是因为签名验证的时候, 需要拿出该公钥进行验证; output保存的是公钥的哈希, 这是因为输出不需要公钥做验证
+	PubKey []byte
 }
 
 func (in *TXInput) UsesKey(pubKeyHash []byte) bool {
@@ -111,15 +113,28 @@ func (tx Transaction) IsCoinbase() bool {
 
 // Serialize 序列化Block结构体
 func (tx *Transaction) Serialize() []byte {
-	var result bytes.Buffer
-	encoder := gob.NewEncoder(&result)
+	var buff bytes.Buffer
+	encoder := gob.NewEncoder(&buff)
 
 	err := encoder.Encode(tx)
 	if err != nil {
 		panic(err)
 	}
 
-	return result.Bytes()
+	return buff.Bytes()
+}
+
+// DeserializeTransaction deserializes a transaction
+func DeserializeTransaction(data []byte) Transaction {
+	var transaction Transaction
+
+	decoder := gob.NewDecoder(bytes.NewReader(data))
+	err := decoder.Decode(&transaction)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	return transaction
 }
 
 // Hash returns the hash of the Transaction
@@ -129,6 +144,8 @@ func (tx *Transaction) Hash() []byte {
 	txCopy := *tx
 	txCopy.ID = []byte{}
 
+	log.Printf("txCopy:%s\n", txCopy)
+	log.Printf("txCopy.Serialize()=>%x", txCopy.Serialize())
 	hash = sha256.Sum256(txCopy.Serialize())
 
 	return hash[:]
@@ -142,17 +159,13 @@ func (tx *Transaction) Hash() []byte {
 // 	return out.ScriptPubKey == unlockingData
 // }
 
-func NewUTXOTransaction(from, to string, amount int, UTXOSet *UTXOSet) *Transaction {
+func NewUTXOTransaction(wallet *Wallet, from, to string, amount int, UTXOSet *UTXOSet) *Transaction {
 	var inputs []TXInput
 	var outputs []TXOutput
 
-	wallets, err := NewWallets()
-	if err != nil {
-		log.Panic(err)
-	}
-	wallet := wallets.GetWallet(from)
 	pubKeyHash := HashPubKey(wallet.PublicKey)
 	acc, validOutputs := UTXOSet.FindSpendableOutputs(pubKeyHash, amount)
+
 	log.Printf("\nvalidOutputs:%#v\n\n", validOutputs)
 	if acc < amount {
 		log.Panic("ERROR: Not enough funds")
@@ -243,10 +256,16 @@ func (tx *Transaction) Sign(privKey ecdsa.PrivateKey, prevTXs map[string]Transac
 		// 把输入引用的"上一个交易输出的公钥哈希", 赋值过来
 		txCopy.Vin[inID].PubKey = prevTx.Vout[vin.Vout].PubKeyHash
 		// 上面那些步骤就是为了计算出hash, 用来签名
-		txCopy.ID = txCopy.Hash()
-		txCopy.Vin[inID].PubKey = nil
 
-		r, s, err := ecdsa.Sign(rand.Reader, &privKey, txCopy.ID)
+		//这里原先是用Hash左右签名数据, 但是从钱包节点传过来的tx虽然字段值都一样, 但是序列化的字节却有一些不同, 导致最终hash出来的结果不同
+		//所以现在修改成直接把结构体打印成十六进制再用于签名
+		//txCopy.ID = txCopy.Hash()
+
+		txCopy.Vin[inID].PubKey = nil
+		dataToSign := fmt.Sprintf("%x", txCopy)
+		log.Printf("Sign Data:0x%s\n\n", dataToSign)
+
+		r, s, err := ecdsa.Sign(rand.Reader, &privKey, []byte(dataToSign))
 		if err != nil {
 			panic(err)
 		}
@@ -289,7 +308,11 @@ func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
 		prevTx := prevTXs[hex.EncodeToString(vin.Txid)]
 		txCopy.Vin[inID].Signature = nil
 		txCopy.Vin[inID].PubKey = prevTx.Vout[vin.Vout].PubKeyHash
-		txCopy.ID = txCopy.Hash()
+
+		//这里原先是用Hash左右签名数据, 但是从钱包节点传过来的tx虽然字段值都一样, 但是序列化的字节却有一些不同, 导致最终hash出来的结果不同
+		//所以现在修改成直接把结构体打印成十六进制再用于签名
+		//txCopy.ID = txCopy.Hash()
+
 		txCopy.Vin[inID].PubKey = nil
 
 		r := big.Int{}
@@ -304,8 +327,11 @@ func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
 		x.SetBytes(vin.PubKey[:(keyLen / 2)])
 		y.SetBytes(vin.PubKey[(keyLen / 2):])
 
-		rawPubKey := ecdsa.PublicKey{curve, &x, &y}
-		if ecdsa.Verify(&rawPubKey, txCopy.ID, &r, &s) == false {
+		rawPubKey := ecdsa.PublicKey{Curve: curve, X: &x, Y: &y}
+
+		dataToSign := fmt.Sprintf("%x", txCopy)
+		log.Printf("Verify Data:0x%x\n", dataToSign)
+		if ecdsa.Verify(&rawPubKey, []byte(dataToSign), &r, &s) == false {
 			return false
 		}
 	}
