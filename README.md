@@ -2,7 +2,7 @@
 主要参考书籍[Building Blockchain in Go.](https://jeiwan.cc/posts/building-blockchain-in-go-part-1/)
 
 # 感受
-非常感谢作者jeiwan, 通俗易懂把比特币底层讲解清楚了. 虽然里面还有很多地方可以优化, 而且还有一些BUG..haha.
+Thank you jeiwan, 通俗易懂把比特币底层讲解清楚了. 虽然里面还有很多地方可以优化, 而且还有一些BUG..haha.
 当然里面P2P部分的实现有些糙, 还有很多发挥空间(😆).
 
 # 如何运行?
