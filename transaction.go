@@ -257,8 +257,7 @@ func (tx *Transaction) Sign(privKey ecdsa.PrivateKey, prevTXs map[string]Transac
 		txCopy.Vin[inID].PubKey = prevTx.Vout[vin.Vout].PubKeyHash
 		// 上面那些步骤就是为了计算出hash, 用来签名
 
-		//这里原先是用Hash左右签名数据, 但是从钱包节点传过来的tx虽然字段值都一样, 但是序列化的字节却有一些不同, 导致最终hash出来的结果不同
-		//所以现在修改成直接把结构体打印成十六进制再用于签名
+		//参考验证部分的注释
 		//txCopy.ID = txCopy.Hash()
 
 		txCopy.Vin[inID].PubKey = nil
@@ -309,8 +308,8 @@ func (tx *Transaction) Verify(prevTXs map[string]Transaction) bool {
 		txCopy.Vin[inID].Signature = nil
 		txCopy.Vin[inID].PubKey = prevTx.Vout[vin.Vout].PubKeyHash
 
-		//这里原先是用Hash左右签名数据, 但是从钱包节点传过来的tx虽然字段值都一样, 但是序列化的字节却有一些不同, 导致最终hash出来的结果不同
-		//所以现在修改成直接把结构体打印成十六进制再用于签名
+		//这里原先是用Hash作为签名数据, 但是从钱包节点->中心节点传过来的tx虽然字段值都一样, 但是序列化的字节却有一些不同, 导致最终hash出来的结果不同
+		//所以现在修改成直接把结构体打印成十六进制dataToSign再用于签名
 		//txCopy.ID = txCopy.Hash()
 
 		txCopy.Vin[inID].PubKey = nil
